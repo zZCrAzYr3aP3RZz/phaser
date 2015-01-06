@@ -1,0 +1,407 @@
+Var game = new Phaser.Game(800, 600, Phaser.CANVAS, 'phaser-example', { preload: preload, create: create });
+
+var COIN_SIZE = 64;
+var COIN_SPACING = 2;
+var COIN_SIZE_SPACED = GEM_SIZE + GEM_SPACING;
+var BOARD_COLS;
+var BOARD_ROWS;
+var MATCH_MIN = 3; // min number of same color gems required in a row to be considered a match
+
+var coins;
+var selectedCoin = null;
+var selectedCoinStartPos;
+var selectedCoinTween;
+var tempShiftedCoin = null;
+var tempShiftedCoinTween;
+var allowInput;
+
+function preload() {
+
+    game.load.spritesheet("COINS", "assets/sprites/coins32x5.png", COIN_SIZE, COIN_SIZE);
+
+}
+
+function create() {
+
+    // fill the screen with as many coins as possible
+    spawnBoard();
+
+    // currently selected gem starting position. used to stop player form moving gems too far.
+    selectedCoinStartPos = { x: 0, y: 0 };
+    
+    // used to disable input while coins are dropping down and respawning
+    allowInput = true;
+
+    game.input.addMoveCallback(slideCoin, this);
+
+}
+
+function releaseGem(selectedCoin) {
+
+    console.log('up from', selectedCoin);
+
+    // when the mouse is released with a coin selected
+    // 1) check for matches
+    // 2) remove matched coin
+    // 3) drop down coins above removed coins
+    // 4) refill the board
+
+    checkAndKillCoinMatches(selectedCoin);
+
+    if (tempShiftedGem !== null)
+    {
+        checkAndKillCoinMatches(tempShiftedCoin);
+    }
+
+    removeKilledCoins();
+
+    var dropCoinDuration = dropCoins();
+
+    // delay board refilling until all existing gems have dropped down
+    game.time.events.add(dropCoinDuration * 100, refillBoard);
+
+    allowInput = false;
+
+    selectedCoin = null;
+    tempShiftedCoin = null;
+
+}
+
+function slideCoin(pointer, x, y, fromClick) {
+
+    // check if a selected coin should be moved and do it
+
+    if (selectedCoin && pointer.isDown)
+    {
+        var cursorCoinPosX = getCoinPos(x);
+        var cursorCoinPosY = getCoinPos(y);
+
+        if (checkIfCoinCanBeMovedHere(selectedCoinStartPos.x, selectedCoinStartPos.y, cursorCoinPosX, cursorCoinPosY))
+        {
+            if (cursorCoinPosX !== selectedCoin.posX || cursorCoinPosY !== selectedCoin.posY)
+            {
+                // move currently selected coin
+                if (selectedCoinTween !== null)
+                {
+                    game.tweens.remove(selectedCoinTween);
+                }
+
+                selectedCoinTween = tweenCoinPos(selectedCoin, cursorCoinPosX, cursorCoinPosY);
+
+                coin.bringToTop(selectedCoin);
+
+                // if we moved a coin to make way for the selected coin earlier, move it back into its starting position
+                if (tempShiftedCoin !== null)
+                {
+                    tweenCoinPos(tempShiftedCoin, selectedCoin.posX , selectedCoin.posY);
+                    swapCoinPosition(selectedCoin, tempShiftedCoin);
+                }
+
+                // when the player moves the selected Coin, we need to swap the position of the selected Coin with the Coin currently in that position 
+                tempShiftedCoin = getCoin(cursorCoinPosX, cursorCoinPosY);
+
+                if (tempShiftedCoin === selectedCoin)
+                {
+                    tempShiftedCoin = null;
+                }
+                else
+                {
+                    tweenCoinPos(tempShiftedCoin, selectedCoin.posX, selectedCoin.posY);
+                    swapCoinPosition(selectedCoin, tempShiftedCoin);
+                }
+            }
+        }
+    }
+}
+
+// fill the screen with as many coins as possible
+function spawnBoard() {
+
+    BOARD_COLS = Phaser.Math.floor(game.world.width / COIN_SIZE_SPACED);
+    BOARD_ROWS = Phaser.Math.floor(game.world.height / COIN_SIZE_SPACED);
+
+    coin = game.add.group();
+
+    for (var i = 0; i < BOARD_COLS; i++)
+    {
+        for (var j = 0; j < BOARD_ROWS; j++)
+        {
+            var coin = coin.create(i * COIN_SIZE_SPACED, j * COIN_SIZE_SPACED, "COINS");
+            coin.name = 'coin' + i.toString() + 'x' + j.toString();
+            coin.inputEnabled = true;
+            coin.events.onInputDown.add(selectCoin, this);
+            coin.events.onInputUp.add(releaseCoin, this);
+            randomizeCoinColor(coin);
+            setGemPos(coin, i, j); // each coin has a position on the board
+        }
+    }
+
+}
+
+// select a coin and remember its starting position
+function selectCoin(coin, pointer) {
+
+    if (allowInput)
+    {
+        console.log('selectedCoin', Coin);
+        selectedCoin = coin;
+        selectedCoinStartPos.x = coin.posX;
+        selectedCoinStartPos.y = coin.posY;
+    }
+
+}
+
+// find a coin on the board according to its position on the board
+function getcoin(posX, posY) {
+
+    return coins.iterate("id", calcCoinId(posX, posY), Phaser.Group.RETURN_CHILD);
+
+}
+
+// convert world coordinates to board position
+function getCoinPos(coordinate) {
+
+    return Phaser.Math.floor(coordinate / COIN_SIZE_SPACED);
+
+}
+
+// set the position on the board for a gem
+function setGemPos(gem, posX, posY) {
+
+    coin.posX = posX;
+    coin.posY = posY;
+    coin.id = calcGemId(posX, posY);
+
+}
+
+// the coin id is used by getCoin() to find specific coins in the group
+// each position on the board has a unique id
+function calcCoinsId(posX, posY) {
+
+    return posX + posY * BOARD_COLS;
+
+}
+
+// since the coins are a spritesheet, their color is the same as the current frame number
+function getCoinsColor(coin) {
+
+    return coin.frame;
+
+}
+
+// set the coin spritesheet to a random frame
+function randomizeCoinColor(coin) {
+
+    coin.frame = game.rnd.integerInRange(0, coin.animations.frameTotal - 1);
+
+}
+
+// coins can only be moved 1 square up/down or left/right
+function checkIfCoinsCanBeMovedHere(fromPosX, fromPosY, toPosX, toPosY) {
+
+    if (toPosX < 0 || toPosX >= BOARD_COLS || toPosY < 0 || toPosY >= BOARD_ROWS)
+    {
+        return false;
+    }
+
+    if (fromPosX === toPosX && fromPosY >= toPosY - 1 && fromPosY <= toPosY + 1)
+    {
+        return true;
+    }
+
+    if (fromPosY === toPosY && fromPosX >= toPosX - 1 && fromPosX <= toPosX + 1)
+    {
+        return true;
+    }
+
+    return false;
+}
+
+// count how many coins of the same color lie in a given direction
+// eg if moveX=1 and moveY=0, it will count how many coins of the same color lie to the right of the coin
+// stops counting as soon as a gem of a different color or the board end is encountered
+function countSameColorCoin(startCoin, moveX, moveY) {
+
+    var curX = startCoin.posX + moveX;
+    var curY = startCoin.posY + moveY;
+    var count = 0;
+
+    while (curX >= 0 && curY >= 0 && curX < BOARD_COLS && curY < BOARD_ROWS && getCoinColor(getCoin(curX, curY)) === getCoinColor(startCoin))
+    {
+        count++;
+        curX += moveX;
+        curY += moveY;
+    }
+
+    return count;
+
+}
+
+// swap the position of 2 coins when the player drags the selected coin into a new location
+function swapCoinPosition(coin1, coin2) {
+
+    var tempPosX = coin1.posX;
+    var tempPosY = coin1.posY;
+    setCoinPos(coin1, coin2.posX, coin2.posY);
+    setCoinPos(coin2, tempPosX, tempPosY);
+
+}
+
+// count how many coin of the same color are above, below, to the left and right
+// if there are more than 3 matched horizontally or vertically, kill those gems
+// if no match was made, move the coin back into their starting positions
+function checkAndKillGemMatches(coin, matchedGems) {
+
+    if (gem !== null)
+    {
+        var countUp = countSameColorCoins(coin, 0, -1);
+        var countDown = countSameColorCoins(coin, 0, 1);
+        var countLeft = countSameColorCoins(coin, -1, 0);
+        var countRight = countSameColorCoins(coin, 1, 0);
+        
+        var countHoriz = countLeft + countRight + 1;
+        var countVert = countUp + countDown + 1;
+
+        if (countVert >= MATCH_MIN)
+        {
+            killcoinRange(coin.posX, coin.posY - countUp, coin.posX, coin.posY + countDown);
+        }
+
+        if (countHoriz >= MATCH_MIN)
+        {
+            killCoinRange(coin.posX - countLeft, coin.posY, coin.posX + countRight, coin.posY);
+        }
+
+        if (countVert < MATCH_MIN && countHoriz < MATCH_MIN)
+        {
+            if (coin.posX !== selectedCoinStartPos.x || coin.posY !== selectedCoinStartPos.y)
+            {
+                if (selectedCoinTween !== null)
+                {
+                    game.tweens.remove(selectedGemTween);
+                }
+
+                selectedCoinTween = tweenCoinPos(coin, selectedCoinStartPos.x, selectedCoinStartPos.y);
+
+                if (tempShiftedCoin !== null)
+                {
+                    tweenCoinPos(tempShiftedCoin, coin.posX, coin.posY);
+                }
+
+                swapCoinPosition(Coin, tempShiftedCoin);
+            }
+        }
+    }
+
+}
+
+// kill all coins from a starting position to an end position
+function killCoinsRange(fromX, fromY, toX, toY) {
+
+    fromX = Phaser.Math.clamp(fromX, 0, BOARD_COLS - 1);
+    fromY = Phaser.Math.clamp(fromY , 0, BOARD_ROWS - 1);
+    toX = Phaser.Math.clamp(toX, 0, BOARD_COLS - 1);
+    toY = Phaser.Math.clamp(toY, 0, BOARD_ROWS - 1);
+
+    for (var i = fromX; i <= toX; i++)
+    {
+        for (var j = fromY; j <= toY; j++)
+        {
+            var Coin = getCoin(i, j);
+            coin.kill();
+        }
+    }
+
+}
+
+// move coins that have been killed off the board
+function removeKilledCoins() {
+
+    coins.forEach(function(coin) {
+        if (!coin.alive) {
+            setCoinPos(coin, -1,-1);
+        }
+    });
+
+}
+
+// animated coin movement
+function tweenCoinPos(coin, newPosX, newPosY, durationMultiplier) {
+
+    if (durationMultiplier === null || typeof durationMultiplier === 'undefined')
+    {
+        durationMultiplier = 1;
+    }
+
+    return game.add.tween(coin).to({x: newPosX  * COIN_SIZE_SPACED, y: newPosY * COIN_SIZE_SPACED}, 100 * durationMultiplier, Phaser.Easing.Linear.None, true);
+
+}
+
+// look for coins with empty space beneath them and move them down
+function dropCoins() {
+
+    var dropRowCountMax = 0;
+
+    for (var i = 0; i < BOARD_COLS; i++)
+    {
+        var dropRowCount = 0;
+
+        for (var j = BOARD_ROWS - 1; j >= 0; j--)
+        {
+            var coin = getCoins(i, j);
+
+            if (coin === null)
+            {
+                dropRowCount++;
+            }
+            else if (dropRowCount > 0)
+            {
+                setCoinPos(coin, coin.posX, coin.posY + dropRowCount);
+                tweenCoinPos(coin, coin.posX, coin.posY, dropRowCount);
+            }
+        }
+
+        dropRowCountMax = Math.max(dropRowCount, dropRowCountMax);
+    }
+
+    return dropRowCountMax;
+
+}
+
+// look for any empty spots on the board and spawn new coins in their place that fall down from above
+function refillBoard() {
+
+    var maxCoinsMissingFromCol = 0;
+
+    for (var i = 0; i < BOARD_COLS; i++)
+    {
+        var coinsMissingFromCol = 0;
+
+        for (var j = BOARD_ROWS - 1; j >= 0; j--)
+        {
+            var coin = getCoin(i, j);
+
+            if (coin === null)
+            {
+                coinsMissingFromCol++;
+                coin = coins.getFirstDead();
+                coin.reset(i * COIN_SIZE_SPACED, -coinsMissingFromCol * COIN_SIZE_SPACED);
+                randomizeCoinColor(coin);
+                setCoinPos(coin, i, j);
+                tweenCoinPos(coin, coin.posX, coin.posY, coinsMissingFromCol * 2);
+            }
+        }
+
+        maxCoinsMissingFromCol = Math.max(maxCoinsMissingFromCol, coinsMissingFromCol);
+    }
+
+    game.time.events.add(maxCoinsMissingFromCol * 2 * 100, boardRefilled);
+
+}
+
+// when the board has finished refilling, re-enable player input
+function boardRefilled() {
+
+    allowInput = true;
+
+}
